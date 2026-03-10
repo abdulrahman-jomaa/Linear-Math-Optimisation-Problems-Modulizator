@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Optimization Model Builder</title>
+
+    <!-- Load Blockly -->
+    <script src="https://unpkg.com/blockly/blockly.min.js"></script>
+
+    <!-- Load our custom logic -->
+    <script src="blocks.js"></script>
+    <script src="generator.js"></script>
+
+    <style>
+        body {
+            font-family: Arial;
+        }
+
+        #blocklyDiv {
+            height: 600px;
+            width: 100%;
+            border: 1px solid #ccc;
+        }
+
+        button {
+            margin-top: 15px;
+            padding: 10px 15px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        #output {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #f4f4f4;
+            border: 1px solid #ddd;
+            min-height: 50px;
+        }
+
+        #visualizationDiv {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            display: flex; /* Arrange bins side-by-side */
+            flex-wrap: wrap; /* Allow bins to wrap to the next line */
+            gap: 15px; /* Space between bins */
+            min-height: 150px;
+        }
+        .bin {
+            border: 2px solid #333;
+            border-radius: 5px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            min-width: 120px;
+        }
+        .bin h3 {
+            margin-top: 0;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #ccc;
+        }
+        .item {
+            background-color: #4CAF50;
+            color: white;
+            padding: 8px;
+            margin-top: 5px;
+            border-radius: 3px;
+            font-weight: bold;
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>Optimization Model Builder</h1>
+
+    <!-- The workspace where blocks are dragged -->
+    <div id="blocklyDiv"></div>
+
+    <!-- The Toolbox Menu (Hidden XML that tells Blockly what blocks to show) -->
+    <xml id="toolbox" style="display:none">
+
+        <category name="Definitions" colour="330">
+            <block type="set_def"></block>
+            <block type="param_def"></block>
+            <block type="var_def"></block>
+        </category>
+
+        <category name="Objective" colour="20">
+            <!-- We replaced 'objective' with these two specific blocks -->
+            <block type="minimize"></block>
+            <block type="maximize"></block>
+        </category>
+
+        <category name="Math" colour="120">
+            <block type="sum"></block>
+            <block type="multiply"></block>
+            <block type="math_number"></block>
+        </category>
+
+        <category name="Variables" colour="200">
+            <block type="variable"></block>
+            <block type="parameter"></block>
+        </category>
+
+        <category name="Constraints" colour="290">
+            <block type="forall"></block>
+            <block type="constraint"></block>
+        </category>
+    </xml>
+
+    <button onclick="exportJSON()">Export Model JSON</button>
+    <button onclick="solveModel()" style="background-color: #4CAF50; color: white; font-weight: bold;">2. Solve with SCIP!</button>
+
+    <!-- Where the JSON will be printed -->
+    <pre id="output">JSON will appear here...</pre>
+    <div id="visualizationDiv"></div>
+
+    <script>
+        // Inject Blockly into the page
+        const workspace = Blockly.inject('blocklyDiv', {
+            toolbox: document.getElementById('toolbox')
+        });
+    </script>
+
+</body>
+</html>
