@@ -3,7 +3,7 @@ import csv
 from bin_sat import BinPackingSAT
 
 PROBLEMS_PATH = ["p1.json", "p2.json", "p3.json"]
-REPETITIONS = 1  # for now just 1 rep
+REPETITIONS = 1  # keep 1 for testing first
 
 
 def write_to_csv(problem_index: int, rows):
@@ -19,13 +19,13 @@ if __name__ == "__main__":
     for idx, problem_path in enumerate(PROBLEMS_PATH, start=1):
         rows = [["Optimal Bins", "Solving Time", "Building Time", "Total Time"]]
 
-        for rep in range(REPETITIONS):
+        for _ in range(REPETITIONS):
             solver = BinPackingSAT(problem_path)
             result = solver.solve_optimally(solver_name="glucose4")
 
             rows.append(
                 [
-                    result.optimal_bins,
+                    result.optimal_bins if result.feasible else "INFEASIBLE",
                     result.solve_time_us,
                     result.build_time_us,
                     result.total_time_us,

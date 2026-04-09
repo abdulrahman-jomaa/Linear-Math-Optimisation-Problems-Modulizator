@@ -2,7 +2,7 @@ import json
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 from pysat.card import CardEnc, EncType
 from pysat.formula import CNF, IDPool
@@ -17,16 +17,17 @@ class SatSolveResult:
     solve_time_us: float
     total_time_us: float
     k: int
-    assignment: Optional[Dict[str, str]] = None
+    assignment: Optional[Dict[Any, Any]] = None
 
 
 @dataclass
 class SatOptimizationResult:
-    optimal_bins: int
+    feasible: bool
+    optimal_bins: Optional[int]
     build_time_us: float
     solve_time_us: float
     total_time_us: float
-    assignment: Optional[Dict[str, str]] = None
+    assignment: Optional[Dict[Any, Any]] = None
 
 
 class BinPackingSAT:
@@ -52,7 +53,7 @@ class BinPackingSAT:
     @staticmethod
     def _load_instance(json_path: str) -> Dict:
         """
-        Assumes a JSON structure like the one from your project:
+        Expected JSON structure:
         {
             "sets": {
                 "items": [...],
@@ -60,12 +61,9 @@ class BinPackingSAT:
             },
             "parameters": {
                 "size": {...} or [...],
-                "capacity": {...} or [...]
+                "capacity": {...} or [...] or scalar
             }
         }
-
-        This parser is written to be robust enough for the format
-        you described earlier.
         """
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -88,6 +86,12 @@ class BinPackingSAT:
 
     @staticmethod
     def _normalize_parameter(keys, raw_value):
+        """
+        Supports:
+        - dict form: {key: value, ...}
+        - list form:  [v1, v2, ...] matched in order with keys
+        - scalar form: c, replicated for all keys
+        """
         if isinstance(raw_value, dict):
             return {k: int(v) for k, v in raw_value.items()}
 
@@ -109,10 +113,10 @@ class BinPackingSAT:
     def upper_bound(self) -> int:
         return self.num_bins
 
-    def _x_var(self, vpool: IDPool, item: str, bin_name: str) -> int:
+    def _x_var(self, vpool: IDPool, item, bin_name) -> int:
         return vpool.id(f"x[{item},{bin_name}]")
 
-    def build_cnf_for_k(self, k: int) -> Tuple[CNF, IDPool, List[str]]:
+    def build_cnf_for_k(self, k: int) -> Tuple[CNF, IDPool, List[Any]]:
         """
         Build CNF for the decision problem:
             'Is there a packing using at most the first k bins?'
@@ -132,32 +136,37 @@ class BinPackingSAT:
         first_bin = allowed_bins[0]
         cnf.append([self._x_var(vpool, first_item, first_bin)])
 
-        # 1) Each item must be assigned to exactly one bin among the first k bins.
+        # Each item must be assigned to exactly one of the first k bins.
         for item in self.items:
             lits = [self._x_var(vpool, item, b) for b in allowed_bins]
 
-            # Exactly one bin for each item.
             eq1 = CardEnc.equals(
-                lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter
+                lits=lits,
+                bound=1,
+                vpool=vpool,
+                encoding=EncType.seqcounter,
             )
             cnf.extend(eq1.clauses)
 
-        # 2) Capacity constraint for each bin:
-        #    sum_i size_i * x[i,j] <= capacity[j]
+        # Capacity constraint for each bin:
+        # sum_i size_i * x[i,j] <= capacity[j]
         for b in allowed_bins:
             lits = [self._x_var(vpool, item, b) for item in self.items]
             weights = [self.sizes[item] for item in self.items]
             capacity = self.capacities[b]
 
-            pb = PBEnc.leq(lits=lits, weights=weights, bound=capacity, vpool=vpool)
+            pb = PBEnc.leq(
+                lits=lits,
+                weights=weights,
+                bound=capacity,
+                vpool=vpool,
+            )
             cnf.extend(pb.clauses)
 
         end = time.perf_counter()
         build_time_us = (end - start) * 1e6
 
-        # We return the CNF and metadata. The timing itself is measured here,
-        # but the caller decides how to aggregate it.
-        cnf._build_time_us = build_time_us  # attached for convenience
+        cnf._build_time_us = build_time_us
         return cnf, vpool, allowed_bins
 
     def solve_for_k(self, k: int, solver_name: str = "glucose4") -> SatSolveResult:
@@ -190,13 +199,13 @@ class BinPackingSAT:
         )
 
     def _decode_assignment(
-        self, model: List[int], vpool: IDPool, allowed_bins: List[str]
-    ) -> Dict[str, str]:
+        self, model: List[int], vpool: IDPool, allowed_bins: List[Any]
+    ) -> Dict[Any, Any]:
         """
         Decode item -> bin assignment from a satisfying model.
         """
-        model_set = set(lit for lit in model if lit > 0)
-        assignment: Dict[str, str] = {}
+        model_set = {lit for lit in model if lit > 0}
+        assignment: Dict[Any, Any] = {}
 
         for item in self.items:
             for b in allowed_bins:
@@ -211,6 +220,9 @@ class BinPackingSAT:
         """
         Binary search on k to find the minimum number of bins.
         Measures the total build/solve time accumulated across all SAT calls.
+
+        If the instance is infeasible even when all available bins are allowed,
+        returns feasible=False instead of crashing.
         """
         lb = self.lower_bound()
         ub = self.upper_bound()
@@ -218,6 +230,17 @@ class BinPackingSAT:
         total_build_time_us = 0.0
         total_solve_time_us = 0.0
         best_assignment = None
+
+        # Immediate infeasibility from simple capacity lower bound.
+        if lb > ub:
+            return SatOptimizationResult(
+                feasible=False,
+                optimal_bins=None,
+                build_time_us=0.0,
+                solve_time_us=0.0,
+                total_time_us=0.0,
+                assignment=None,
+            )
 
         while lb < ub:
             k = (lb + ub) // 2
@@ -232,15 +255,26 @@ class BinPackingSAT:
             else:
                 lb = k + 1
 
-        # Final solve at the optimum lb == ub, to recover the final model cleanly.
+        # Final solve at k = lb = ub.
         final_result = self.solve_for_k(lb, solver_name=solver_name)
         total_build_time_us += final_result.build_time_us
         total_solve_time_us += final_result.solve_time_us
+
+        if not final_result.feasible:
+            return SatOptimizationResult(
+                feasible=False,
+                optimal_bins=None,
+                build_time_us=total_build_time_us,
+                solve_time_us=total_solve_time_us,
+                total_time_us=total_build_time_us + total_solve_time_us,
+                assignment=None,
+            )
 
         if final_result.assignment is not None:
             best_assignment = final_result.assignment
 
         return SatOptimizationResult(
+            feasible=True,
             optimal_bins=lb,
             build_time_us=total_build_time_us,
             solve_time_us=total_solve_time_us,
