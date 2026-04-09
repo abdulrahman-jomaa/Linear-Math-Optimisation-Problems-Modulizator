@@ -62,6 +62,32 @@ function generate(block) {
                 currentBlock = currentBlock.getNextBlock();
             }
             return { type: "forall_wrapper", list: forall_constraints };
+        case "forall_where":
+            let fw_constraints = [];
+            let fw_currentBlock = block.getInputTargetBlock("CONSTRAINTS");
+            const opMap = { "EQ":"==", "LE":"<=", "GE":">=", "LT":"<", "GT":">", "NEQ":"!=" };
+            let rawOp = block.getFieldValue("OP");
+            let realOp = opMap[rawOp] || rawOp;
+
+            while (fw_currentBlock) {
+                let inner_c = generate(fw_currentBlock);
+                if (inner_c) {
+                    fw_constraints.push({
+                        forall: {
+                            index: block.getFieldValue("INDEX"),
+                            set: block.getFieldValue("SET"),
+                            condition: {
+                                left: block.getFieldValue("LEFT"),
+                                op: realOp,
+                                right: block.getFieldValue("RIGHT")
+                            }
+                        },
+                        expr: inner_c
+                    });
+                }
+                fw_currentBlock = fw_currentBlock.getNextBlock();
+            }
+            return { type: "forall_wrapper", list: fw_constraints };
     }
 }
 

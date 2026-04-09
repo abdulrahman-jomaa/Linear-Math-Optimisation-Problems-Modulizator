@@ -1,38 +1,70 @@
+from src.modelBuilder import ModelBuilder
+import time
 import csv
+from colorama import Fore
 
-from bin_sat import BinPackingSAT
-
-PROBLEMS_PATH = ["p1.json", "p2.json", "p3.json"]
-REPETITIONS = 1  # keep 1 for testing first
+REPETITIONS = 3
 
 
-def write_to_csv(problem_index: int, rows):
-    filename = f"Data_P{problem_index}.csv"
-    with open(filename, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerows(rows)
+def write_to_csv(data):
+    j = 0
+    i = 0
+    for matrix in data:
+        filename = f"Data/Data_m{j + 1}_P{i + 1}.csv"
+
+        with open(filename, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerows(matrix)
+
+        if i == 2:
+            j += 1
+            i = 0
+            continue
+        i += 1
 
 
 if __name__ == "__main__":
-    print("Starting SAT experiment...")
+    problems_path = ["p1.json", "p2.json", "p3.json"]
+    formulations_path = ["m1_", "m2_"]
+    elapsed_times_4_all_problems = []
 
-    for idx, problem_path in enumerate(PROBLEMS_PATH, start=1):
-        rows = [["Optimal Bins", "Solving Time", "Building Time", "Total Time"]]
+    print(Fore.RED + "Starting the experiment : \n")
 
-        for _ in range(REPETITIONS):
-            solver = BinPackingSAT(problem_path)
-            result = solver.solve_optimally(solver_name="glucose4")
+    for m_path in formulations_path:
 
-            rows.append(
-                [
-                    result.optimal_bins if result.feasible else "INFEASIBLE",
-                    result.solve_time_us,
-                    result.build_time_us,
-                    result.total_time_us,
-                ]
-            )
+        print(Fore.RED + "Working on problems with : " + m_path + "\n")
 
-        write_to_csv(idx, rows)
-        print(f"Problem {problem_path} done.")
+        for p_path in problems_path:
+            path = "problems/" + m_path + p_path
+            m = [["Solving Time", "Building Time", "Total Time"]]
 
-    print("Saved all SAT data in csv files.")
+            print(Fore.WHITE + "Started problem : " + m_path + p_path + "\n")
+            for _ in range(REPETITIONS):
+                # building time
+                start = time.perf_counter()
+                model = ModelBuilder(path).build()
+                end = time.perf_counter()
+                building_elapsed_time_us = (end - start) * 1e6
+
+                # model.hideOutput()
+
+                # solving time
+                start = time.perf_counter()
+                model.optimize()
+                end = time.perf_counter()
+
+                solving_elapsed_time_us = (end - start) * 1e6
+                m.append(
+                    [
+                        solving_elapsed_time_us,
+                        building_elapsed_time_us,
+                        building_elapsed_time_us + solving_elapsed_time_us,
+                    ]
+                )
+
+            elapsed_times_4_all_problems.append(m)
+
+            print(Fore.RED + "Problem " + m_path + p_path + " done.\n")
+
+    write_to_csv(elapsed_times_4_all_problems)
+    print(Fore.RED + "Saved All data in csv files.\n")

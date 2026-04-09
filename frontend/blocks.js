@@ -173,3 +173,29 @@ Blockly.Blocks['math_number'] = {
     this.setTooltip("A literal number.");
   }
 };
+
+Blockly.Blocks['forall_where'] = {
+    init: function(){
+        this.appendDummyInput()
+            .appendField("For all")
+            .appendField(new Blockly.FieldTextInput("j"), "INDEX")
+            .appendField("in set")
+            .appendField(new Blockly.FieldTextInput("items"), "SET")
+            .appendField("where")
+            .appendField(new Blockly.FieldTextInput("i"), "LEFT")
+            .appendField(new Blockly.FieldDropdown([
+                ["=", "EQ"],
+                ["<", "LT"],
+                ["≤", "LE"],
+                ["≠", "NEQ"],
+                [">", "GT"],
+                ["≥", "GE"]
+            ]), "OP")
+            .appendField(new Blockly.FieldTextInput("j"), "RIGHT");
+        this.appendStatementInput("CONSTRAINTS")
+            .setCheck(null);
+        this.setPreviousStatement(true);
+        this.setNextStatement(true);
+        this.setColour(290);
+    }
+};
