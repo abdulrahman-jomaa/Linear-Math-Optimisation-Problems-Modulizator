@@ -17,7 +17,7 @@ class SatSolveResult:
     solve_time_us: float
     total_time_us: float
     k: int
-    assignment: Optional[Dict[Any, Any]] = None
+    assignment: Optional[Dict[Any, int]] = None
 
 
 @dataclass
@@ -27,15 +27,18 @@ class SatOptimizationResult:
     build_time_us: float
     solve_time_us: float
     total_time_us: float
-    assignment: Optional[Dict[Any, Any]] = None
+    assignment: Optional[Dict[Any, int]] = None
 
 
 class BinPackingSAT:
     """
-    SAT solver for the decision version of bin packing:
-        'Can the items be packed into at most K bins?'
+    SAT solver for bin packing.
 
-    Then uses binary search on K to find the optimum.
+    Important design choice:
+    - We read items, sizes, and capacity information from the JSON.
+    - We do NOT treat the JSON 'bins' list as a hard upper bound.
+    - Instead, we generate candidate bins internally, up to num_items,
+      which is always a safe upper bound if every item fits alone.
     """
 
     def __init__(self, json_path: str):
@@ -43,55 +46,66 @@ class BinPackingSAT:
         self.instance = self._load_instance(json_path)
 
         self.items = self.instance["items"]
-        self.bins = self.instance["bins"]
         self.sizes = self.instance["sizes"]
-        self.capacities = self.instance["capacities"]
+        self.bin_capacity = self.instance["bin_capacity"]
 
         self.num_items = len(self.items)
-        self.num_bins = len(self.bins)
+
+        # Safe candidate bins: one per item
+        self.candidate_bins = list(range(self.num_items))
+
+        # Sanity check: each item must fit alone in one bin
+        too_large = [i for i in self.items if self.sizes[i] > self.bin_capacity]
+        if too_large:
+            raise ValueError(
+                f"Some items do not fit into a single bin of capacity {self.bin_capacity}: {too_large}"
+            )
 
     @staticmethod
     def _load_instance(json_path: str) -> Dict:
-        """
-        Expected JSON structure:
-        {
-            "sets": {
-                "items": [...],
-                "bins": [...]
-            },
-            "parameters": {
-                "size": {...} or [...],
-                "capacity": {...} or [...] or scalar
-            }
-        }
-        """
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         items = data["sets"]["items"]
-        bins = data["sets"]["bins"]
-
         raw_sizes = data["parameters"]["size"]
         raw_capacities = data["parameters"]["capacity"]
 
         sizes = BinPackingSAT._normalize_parameter(items, raw_sizes)
-        capacities = BinPackingSAT._normalize_parameter(bins, raw_capacities)
+
+        # We assume identical bin capacities within one instance.
+        # If the JSON contains a list, we read the first one and verify uniformity.
+        if isinstance(raw_capacities, list):
+            if len(raw_capacities) == 0:
+                raise ValueError("Capacity list is empty.")
+            first_cap = int(raw_capacities[0])
+            if any(int(c) != first_cap for c in raw_capacities):
+                raise ValueError(
+                    "This SAT version assumes identical bin capacities within an instance."
+                )
+            bin_capacity = first_cap
+        elif isinstance(raw_capacities, dict):
+            vals = [int(v) for v in raw_capacities.values()]
+            if len(vals) == 0:
+                raise ValueError("Capacity dict is empty.")
+            first_cap = vals[0]
+            if any(v != first_cap for v in vals):
+                raise ValueError(
+                    "This SAT version assumes identical bin capacities within an instance."
+                )
+            bin_capacity = first_cap
+        elif isinstance(raw_capacities, int):
+            bin_capacity = int(raw_capacities)
+        else:
+            raise ValueError(f"Unsupported capacity format: {type(raw_capacities)}")
 
         return {
             "items": items,
-            "bins": bins,
             "sizes": sizes,
-            "capacities": capacities,
+            "bin_capacity": bin_capacity,
         }
 
     @staticmethod
     def _normalize_parameter(keys, raw_value):
-        """
-        Supports:
-        - dict form: {key: value, ...}
-        - list form:  [v1, v2, ...] matched in order with keys
-        - scalar form: c, replicated for all keys
-        """
         if isinstance(raw_value, dict):
             return {k: int(v) for k, v in raw_value.items()}
 
@@ -107,39 +121,38 @@ class BinPackingSAT:
 
     def lower_bound(self) -> int:
         total_size = sum(self.sizes[i] for i in self.items)
-        max_capacity = max(self.capacities[b] for b in self.bins)
-        return max(1, math.ceil(total_size / max_capacity))
+        return max(1, math.ceil(total_size / self.bin_capacity))
 
     def upper_bound(self) -> int:
-        return self.num_bins
+        # Safe upper bound: one bin per item
+        return self.num_items
 
-    def _x_var(self, vpool: IDPool, item, bin_name) -> int:
-        return vpool.id(f"x[{item},{bin_name}]")
+    def _x_var(self, vpool: IDPool, item, bin_id: int) -> int:
+        return vpool.id(f"x[{item},{bin_id}]")
 
-    def build_cnf_for_k(self, k: int) -> Tuple[CNF, IDPool, List[Any]]:
+    def build_cnf_for_k(self, k: int) -> Tuple[CNF, IDPool, List[int], float]:
         """
-        Build CNF for the decision problem:
-            'Is there a packing using at most the first k bins?'
+        Build CNF for:
+            'Can the items be packed into at most k bins?'
+        using the first k internally generated candidate bins.
         """
-        if not (1 <= k <= self.num_bins):
-            raise ValueError(f"k must be in [1, {self.num_bins}], got {k}")
+        if not (1 <= k <= self.num_items):
+            raise ValueError(f"k must be in [1, {self.num_items}], got {k}")
 
         start = time.perf_counter()
 
         cnf = CNF()
         vpool = IDPool()
 
-        allowed_bins = self.bins[:k]
+        allowed_bins = self.candidate_bins[:k]
 
-        # Symmetry breaking: put the first item in the first allowed bin.
+        # Symmetry breaking: put the first item in the first bin
         first_item = self.items[0]
-        first_bin = allowed_bins[0]
-        cnf.append([self._x_var(vpool, first_item, first_bin)])
+        cnf.append([self._x_var(vpool, first_item, allowed_bins[0])])
 
-        # Each item must be assigned to exactly one of the first k bins.
+        # Exactly one bin per item
         for item in self.items:
             lits = [self._x_var(vpool, item, b) for b in allowed_bins]
-
             eq1 = CardEnc.equals(
                 lits=lits,
                 bound=1,
@@ -148,17 +161,15 @@ class BinPackingSAT:
             )
             cnf.extend(eq1.clauses)
 
-        # Capacity constraint for each bin:
-        # sum_i size_i * x[i,j] <= capacity[j]
+        # Capacity constraint for each bin
         for b in allowed_bins:
             lits = [self._x_var(vpool, item, b) for item in self.items]
             weights = [self.sizes[item] for item in self.items]
-            capacity = self.capacities[b]
 
             pb = PBEnc.leq(
                 lits=lits,
                 weights=weights,
-                bound=capacity,
+                bound=self.bin_capacity,
                 vpool=vpool,
             )
             cnf.extend(pb.clauses)
@@ -166,15 +177,10 @@ class BinPackingSAT:
         end = time.perf_counter()
         build_time_us = (end - start) * 1e6
 
-        cnf._build_time_us = build_time_us
-        return cnf, vpool, allowed_bins
+        return cnf, vpool, allowed_bins, build_time_us
 
     def solve_for_k(self, k: int, solver_name: str = "glucose4") -> SatSolveResult:
-        """
-        Solve the decision problem for a fixed k.
-        """
-        cnf, vpool, allowed_bins = self.build_cnf_for_k(k)
-        build_time_us = getattr(cnf, "_build_time_us", 0.0)
+        cnf, vpool, allowed_bins, build_time_us = self.build_cnf_for_k(k)
 
         start = time.perf_counter()
         with Solver(name=solver_name, bootstrap_with=cnf.clauses) as solver:
@@ -199,13 +205,10 @@ class BinPackingSAT:
         )
 
     def _decode_assignment(
-        self, model: List[int], vpool: IDPool, allowed_bins: List[Any]
-    ) -> Dict[Any, Any]:
-        """
-        Decode item -> bin assignment from a satisfying model.
-        """
+        self, model: List[int], vpool: IDPool, allowed_bins: List[int]
+    ) -> Dict[Any, int]:
         model_set = {lit for lit in model if lit > 0}
-        assignment: Dict[Any, Any] = {}
+        assignment: Dict[Any, int] = {}
 
         for item in self.items:
             for b in allowed_bins:
@@ -217,30 +220,12 @@ class BinPackingSAT:
         return assignment
 
     def solve_optimally(self, solver_name: str = "glucose4") -> SatOptimizationResult:
-        """
-        Binary search on k to find the minimum number of bins.
-        Measures the total build/solve time accumulated across all SAT calls.
-
-        If the instance is infeasible even when all available bins are allowed,
-        returns feasible=False instead of crashing.
-        """
         lb = self.lower_bound()
         ub = self.upper_bound()
 
         total_build_time_us = 0.0
         total_solve_time_us = 0.0
         best_assignment = None
-
-        # Immediate infeasibility from simple capacity lower bound.
-        if lb > ub:
-            return SatOptimizationResult(
-                feasible=False,
-                optimal_bins=None,
-                build_time_us=0.0,
-                solve_time_us=0.0,
-                total_time_us=0.0,
-                assignment=None,
-            )
 
         while lb < ub:
             k = (lb + ub) // 2
@@ -255,7 +240,6 @@ class BinPackingSAT:
             else:
                 lb = k + 1
 
-        # Final solve at k = lb = ub.
         final_result = self.solve_for_k(lb, solver_name=solver_name)
         total_build_time_us += final_result.build_time_us
         total_solve_time_us += final_result.solve_time_us
