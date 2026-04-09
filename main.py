@@ -46,7 +46,7 @@ if __name__ == '__main__':
                 end = time.perf_counter()
                 building_elapsed_time_us = (end - start) * 1e6
 
-                #model.hideOutput()
+                model.hideOutput()
 
                 # solving time
                 start = time.perf_counter()
