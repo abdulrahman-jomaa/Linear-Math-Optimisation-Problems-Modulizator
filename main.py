@@ -3,7 +3,7 @@ import time
 import csv
 from colorama import Fore
 
-REPETITIONS = 3
+REPETITIONS = 1
 
 
 def write_to_csv(data):
