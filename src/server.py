@@ -18,11 +18,11 @@ class ModelData(BaseModel):
 def solve_model(data: ModelData):
     try:
         # 1. Save the frontend's JSON to a temporary file
-        with open("temp_model.json", "w") as f:
+        with open("../temp_model.json", "w") as f:
             json.dump(data.model_json, f)
 
         # 2. Use our ModelBuilder to convert JSON -> SCIP Model
-        builder = ModelBuilder("temp_model.json")
+        builder = ModelBuilder("../temp_model.json")
         scip_model = builder.build()
 
         # 3. Solve it!

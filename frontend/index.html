@@ -4,69 +4,54 @@
     <meta charset="utf-8">
     <title>Optimization Model Builder</title>
 
-    <!-- Load Blockly -->
+    <!-- 1. Load Blockly Core -->
     <script src="https://unpkg.com/blockly/blockly.min.js"></script>
 
-    <!-- Load our custom logic -->
+    <!-- 2. Load your custom blocks and generator logic -->
     <script src="blocks.js"></script>
     <script src="generator.js"></script>
 
     <style>
-        body {
-            font-family: Arial;
+        /* ========================================== */
+        /* NUCLEAR FIX FOR TOOLBOX LAYOUT BUG        */
+        /* ========================================== */
+
+        /* 1. Force the row container to have height */
+        .blocklyTreeRow {
+            height: 40px !important;
+            line-height: 40px !important;
+            margin-bottom: 2px !important;
+            box-sizing: content-box !important;
         }
 
+        /* 2. Fix the label alignment */
+        .blocklyTreeLabel {
+            font-size: 16px !important;
+            padding-left: 10px !important;
+            padding-right: 15px !important;
+            vertical-align: middle !important;
+        }
+
+        /* 3. Ensure the workspace container doesn't center-align its children */
         #blocklyDiv {
             height: 600px;
             width: 100%;
             border: 1px solid #ccc;
+            text-align: left !important; /* CRITICAL */
         }
 
-        button {
-            margin-top: 15px;
-            padding: 10px 15px;
-            font-size: 16px;
-            cursor: pointer;
+        #blocklyDiv * {
+            box-sizing: content-box !important;
         }
 
-        #output {
-            margin-top: 15px;
-            padding: 10px;
-            background-color: #f4f4f4;
-            border: 1px solid #ddd;
-            min-height: 50px;
-        }
-
-        #visualizationDiv {
-            margin-top: 20px;
-            padding: 10px;
-            border: 1px solid #ccc;
-            display: flex; /* Arrange bins side-by-side */
-            flex-wrap: wrap; /* Allow bins to wrap to the next line */
-            gap: 15px; /* Space between bins */
-            min-height: 150px;
-        }
-        .bin {
-            border: 2px solid #333;
-            border-radius: 5px;
-            padding: 10px;
-            background-color: #f9f9f9;
-            min-width: 120px;
-        }
-        .bin h3 {
-            margin-top: 0;
-            padding-bottom: 5px;
-            border-bottom: 1px solid #ccc;
-        }
-        .item {
-            background-color: #4CAF50;
-            color: white;
-            padding: 8px;
-            margin-top: 5px;
-            border-radius: 3px;
-            font-weight: bold;
-            text-align: center;
-        }
+        /* General Page Styles */
+        body { font-family: sans-serif; margin: 20px; }
+        .controls { margin-bottom: 10px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin-right: 10px; }
+        #output { margin-top: 15px; padding: 10px; background: #eee; border-radius: 4px; min-height: 50px; white-space: pre-wrap; }
+        #visualizationDiv { margin-top: 15px; display: flex; flex-wrap: wrap; gap: 15px; }
+        .bin { border: 2px solid #333; padding: 10px; background: #f9f9f9; min-width: 120px; }
+        .item { background: #4CAF50; color: white; padding: 5px; margin: 5px 0; text-align: center; font-weight: bold; }
     </style>
 </head>
 
@@ -74,53 +59,67 @@
 
     <h1>Optimization Model Builder</h1>
 
-    <!-- The workspace where blocks are dragged -->
+    <!-- The workspace -->
     <div id="blocklyDiv"></div>
 
-    <!-- The Toolbox Menu (Hidden XML that tells Blockly what blocks to show) -->
-    <xml id="toolbox" style="display:none">
+    <div class="controls" style="margin-top: 20px;">
+        <button onclick="exportJSON()">1. Export Model JSON</button>
+        <button onclick="solveModel()" style="background-color: #4CAF50; color: white; font-weight: bold;">2. Solve with SCIP!</button>
+    </div>
 
+    <pre id="output">JSON output will appear here...</pre>
+    <div id="visualizationDiv"></div>
+
+    <!-- The Toolbox -->
+    <xml id="toolbox" style="display:none">
         <category name="Definitions" colour="330">
             <block type="set_def"></block>
             <block type="param_def"></block>
             <block type="var_def"></block>
         </category>
-
         <category name="Objective" colour="20">
-            <!-- We replaced 'objective' with these two specific blocks -->
             <block type="minimize"></block>
             <block type="maximize"></block>
         </category>
-
         <category name="Math" colour="120">
             <block type="sum"></block>
             <block type="multiply"></block>
             <block type="math_number"></block>
         </category>
-
         <category name="Variables" colour="200">
             <block type="variable"></block>
             <block type="parameter"></block>
         </category>
-
         <category name="Constraints" colour="290">
             <block type="forall"></block>
+            <block type="forall_where"></block>
             <block type="constraint"></block>
         </category>
     </xml>
 
-    <button onclick="exportJSON()">Export Model JSON</button>
-    <button onclick="solveModel()" style="background-color: #4CAF50; color: white; font-weight: bold;">2. Solve with SCIP!</button>
-
-    <!-- Where the JSON will be printed -->
-    <pre id="output">JSON will appear here...</pre>
-    <div id="visualizationDiv"></div>
-
     <script>
-        // Inject Blockly into the page
-        const workspace = Blockly.inject('blocklyDiv', {
-            toolbox: document.getElementById('toolbox')
-        });
+        // Use var so it is globally accessible to your other JS files
+        var workspace;
+
+        function startBlockly() {
+            // Create the workspace
+            workspace = Blockly.inject('blocklyDiv', {
+                toolbox: document.getElementById('toolbox'),
+                // We use 'geras' because it is the most stable renderer for toolboxes
+                renderer: 'geras',
+                grid: { spacing: 20, length: 3, colour: '#ccc', snap: true },
+                trashcan: true,
+                zoom: { controls: true, wheel: true }
+            });
+
+            // Force a layout recalculation after the browser has rendered the page
+            setTimeout(function() {
+                Blockly.svgResize(workspace);
+            }, 200);
+        }
+
+        // Initialize on load
+        window.addEventListener('load', startBlockly);
     </script>
 
 </body>
