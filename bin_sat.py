@@ -32,34 +32,45 @@ class SatOptimizationResult:
 
 class BinPackingSAT:
     """
-    SAT solver for bin packing.
+    Optimized SAT solver for bin packing.
 
-    Important design choice:
-    - We read items, sizes, and capacity information from the JSON.
-    - We do NOT treat the JSON 'bins' list as a hard upper bound.
-    - Instead, we generate candidate bins internally, up to num_items,
-      which is always a safe upper bound if every item fits alone.
+    Main improvements over the original version:
+    - Use First-Fit Decreasing (FFD) for a much tighter upper bound.
+    - Sort items by decreasing size before encoding.
+    - Add explicit bin-usage variables y[b].
+    - Add stronger symmetry breaking:
+        * y[b+1] -> y[b]
+        * item at sorted position p may only use bins 0..p
     """
 
     def __init__(self, json_path: str):
         self.json_path = json_path
         self.instance = self._load_instance(json_path)
 
-        self.items = self.instance["items"]
-        self.sizes = self.instance["sizes"]
+        original_items = self.instance["items"]
+        original_sizes = self.instance["sizes"]
         self.bin_capacity = self.instance["bin_capacity"]
 
-        self.num_items = len(self.items)
-
-        # Safe candidate bins: one per item
-        self.candidate_bins = list(range(self.num_items))
-
-        # Sanity check: each item must fit alone in one bin
-        too_large = [i for i in self.items if self.sizes[i] > self.bin_capacity]
+        # Sanity check
+        too_large = [i for i in original_items if original_sizes[i] > self.bin_capacity]
         if too_large:
             raise ValueError(
                 f"Some items do not fit into a single bin of capacity {self.bin_capacity}: {too_large}"
             )
+
+        # Sort items by decreasing size to improve symmetry breaking and search
+        self.items = sorted(original_items, key=lambda i: (-original_sizes[i], i))
+        self.sizes = original_sizes
+        self.num_items = len(self.items)
+
+        # Position map in sorted order
+        self.item_pos = {item: pos for pos, item in enumerate(self.items)}
+
+        # Safe candidate bins
+        self.candidate_bins = list(range(self.num_items))
+
+        # Heuristic UB
+        self.heuristic_upper_bound = self._first_fit_decreasing_upper_bound()
 
     @staticmethod
     def _load_instance(json_path: str) -> Dict:
@@ -72,10 +83,8 @@ class BinPackingSAT:
 
         sizes = BinPackingSAT._normalize_parameter(items, raw_sizes)
 
-        # We assume identical bin capacities within one instance.
-        # If the JSON contains a list, we read the first one and verify uniformity.
         if isinstance(raw_capacities, list):
-            if len(raw_capacities) == 0:
+            if not raw_capacities:
                 raise ValueError("Capacity list is empty.")
             first_cap = int(raw_capacities[0])
             if any(int(c) != first_cap for c in raw_capacities):
@@ -83,9 +92,10 @@ class BinPackingSAT:
                     "This SAT version assumes identical bin capacities within an instance."
                 )
             bin_capacity = first_cap
+
         elif isinstance(raw_capacities, dict):
             vals = [int(v) for v in raw_capacities.values()]
-            if len(vals) == 0:
+            if not vals:
                 raise ValueError("Capacity dict is empty.")
             first_cap = vals[0]
             if any(v != first_cap for v in vals):
@@ -93,8 +103,10 @@ class BinPackingSAT:
                     "This SAT version assumes identical bin capacities within an instance."
                 )
             bin_capacity = first_cap
+
         elif isinstance(raw_capacities, int):
             bin_capacity = int(raw_capacities)
+
         else:
             raise ValueError(f"Unsupported capacity format: {type(raw_capacities)}")
 
@@ -123,36 +135,73 @@ class BinPackingSAT:
         total_size = sum(self.sizes[i] for i in self.items)
         return max(1, math.ceil(total_size / self.bin_capacity))
 
+    def _first_fit_decreasing_upper_bound(self) -> int:
+        """
+        First-Fit Decreasing heuristic.
+        Returns a much tighter UB than num_items in practice.
+        """
+        remaining = []  # remaining capacities of open bins
+
+        for item in self.items:
+            size = self.sizes[item]
+            placed = False
+
+            for b in range(len(remaining)):
+                if remaining[b] >= size:
+                    remaining[b] -= size
+                    placed = True
+                    break
+
+            if not placed:
+                remaining.append(self.bin_capacity - size)
+
+        return len(remaining)
+
     def upper_bound(self) -> int:
-        # Safe upper bound: one bin per item
-        return self.num_items
+        return self.heuristic_upper_bound
 
     def _x_var(self, vpool: IDPool, item, bin_id: int) -> int:
         return vpool.id(f"x[{item},{bin_id}]")
+
+    def _y_var(self, vpool: IDPool, bin_id: int) -> int:
+        return vpool.id(f"y[{bin_id}]")
 
     def build_cnf_for_k(self, k: int) -> Tuple[CNF, IDPool, List[int], float]:
         """
         Build CNF for:
             'Can the items be packed into at most k bins?'
-        using the first k internally generated candidate bins.
         """
-        if not (1 <= k <= self.num_items):
-            raise ValueError(f"k must be in [1, {self.num_items}], got {k}")
+        if not (1 <= k <= self.upper_bound()):
+            raise ValueError(f"k must be in [1, {self.upper_bound()}], got {k}")
 
         start = time.perf_counter()
 
         cnf = CNF()
         vpool = IDPool()
-
         allowed_bins = self.candidate_bins[:k]
 
-        # Symmetry breaking: put the first item in the first bin
+        # First bin must be used
+        cnf.append([self._y_var(vpool, allowed_bins[0])])
+
+        # Stronger symmetry breaking:
+        # If bin b+1 is used, then bin b must be used.
+        # y[b+1] -> y[b]  ===  (-y[b+1] or y[b])
+        for idx in range(k - 1):
+            b = allowed_bins[idx]
+            b_next = allowed_bins[idx + 1]
+            cnf.append([-self._y_var(vpool, b_next), self._y_var(vpool, b)])
+
+        # Put the first (largest) item in the first bin
         first_item = self.items[0]
         cnf.append([self._x_var(vpool, first_item, allowed_bins[0])])
 
-        # Exactly one bin per item
+        # Exactly one eligible bin per item
+        # Item at position p may only go to bins 0..min(p, k-1)
         for item in self.items:
-            lits = [self._x_var(vpool, item, b) for b in allowed_bins]
+            pos = self.item_pos[item]
+            eligible_bins = allowed_bins[: min(k, pos + 1)]
+
+            lits = [self._x_var(vpool, item, b) for b in eligible_bins]
             eq1 = CardEnc.equals(
                 lits=lits,
                 bound=1,
@@ -161,10 +210,21 @@ class BinPackingSAT:
             )
             cnf.extend(eq1.clauses)
 
-        # Capacity constraint for each bin
+            # x[item,b] -> y[b]
+            for b in eligible_bins:
+                cnf.append([-self._x_var(vpool, item, b), self._y_var(vpool, b)])
+
+        # Capacity constraints for each bin
         for b in allowed_bins:
-            lits = [self._x_var(vpool, item, b) for item in self.items]
-            weights = [self.sizes[item] for item in self.items]
+            lits = []
+            weights = []
+
+            for item in self.items:
+                pos = self.item_pos[item]
+                # item can only use bins up to its position
+                if b <= pos:
+                    lits.append(self._x_var(vpool, item, b))
+                    weights.append(self.sizes[item])
 
             pb = PBEnc.leq(
                 lits=lits,
@@ -176,7 +236,6 @@ class BinPackingSAT:
 
         end = time.perf_counter()
         build_time_us = (end - start) * 1e6
-
         return cnf, vpool, allowed_bins, build_time_us
 
     def solve_for_k(self, k: int, solver_name: str = "glucose4") -> SatSolveResult:
@@ -211,7 +270,9 @@ class BinPackingSAT:
         assignment: Dict[Any, int] = {}
 
         for item in self.items:
-            for b in allowed_bins:
+            pos = self.item_pos[item]
+            eligible_bins = allowed_bins[: min(len(allowed_bins), pos + 1)]
+            for b in eligible_bins:
                 var = self._x_var(vpool, item, b)
                 if var in model_set:
                     assignment[item] = b
@@ -234,6 +295,13 @@ class BinPackingSAT:
             total_build_time_us += result.build_time_us
             total_solve_time_us += result.solve_time_us
 
+            print(
+                f"[SAT] k={k}, feasible={result.feasible}, "
+                f"build={result.build_time_us/1e6:.3f}s, "
+                f"solve={result.solve_time_us/1e6:.3f}s, "
+                f"total={result.total_time_us/1e6:.3f}s"
+            )
+
             if result.feasible:
                 ub = k
                 best_assignment = result.assignment
@@ -243,6 +311,13 @@ class BinPackingSAT:
         final_result = self.solve_for_k(lb, solver_name=solver_name)
         total_build_time_us += final_result.build_time_us
         total_solve_time_us += final_result.solve_time_us
+
+        print(
+            f"[SAT] final k={lb}, feasible={final_result.feasible}, "
+            f"build={final_result.build_time_us/1e6:.3f}s, "
+            f"solve={final_result.solve_time_us/1e6:.3f}s, "
+            f"total={final_result.total_time_us/1e6:.3f}s"
+        )
 
         if not final_result.feasible:
             return SatOptimizationResult(
