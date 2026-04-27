@@ -7,7 +7,7 @@ from colorama import Fore
 import multiprocessing as mp
 from queue import Empty
 
-REPETITIONS = 1
+REPETITIONS = 50
 TIME_LIMIT_SECONDS = 60
 TIMEOUT_LABEL = f"{TIME_LIMIT_SECONDS}s+"
 
